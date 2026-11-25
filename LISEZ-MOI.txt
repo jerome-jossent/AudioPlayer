@@ -1,0 +1,13 @@
+Audio Player - projet complet (à jour)
+======================================
+
+Fichiers Kotlin (app/src/main/java/com/audioplayer/app/) :
+  MainActivity.kt, PlaybackService.kt, PlaylistStore.kt, PlaylistsScreen.kt
+  LastSessionStore.kt   (NOUVEAU : mémoire de la dernière session)
+Ressource Android Auto : app/src/main/res/xml/automotive_app_desc.xml
+Manifest : app/src/main/AndroidManifest.xml  (nouveau bloc <receiver> MediaButtonReceiver)
+
+Nouveautés :
+  - icônes de la barre d'état lisibles (enableEdgeToEdge + fond qui suit le thème)
+  - bouton play du casque : relance la dernière liste, même appli fermée
+  - au lancement de l'appli : dernière liste, dernier titre, dernière position
