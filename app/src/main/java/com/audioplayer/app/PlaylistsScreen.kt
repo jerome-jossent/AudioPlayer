@@ -18,9 +18,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -30,6 +33,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.documentfile.provider.DocumentFile
@@ -60,6 +65,12 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
     var newName by remember { mutableStateOf("") }
     var toDelete by remember { mutableStateOf<Playlist?>(null) }
     var loading by remember { mutableStateOf(false) }
+    var editMode by remember { mutableStateOf(false) }
+    var moveFrom by remember { mutableStateOf<Int?>(null) }
+    var moveText by remember { mutableStateOf("") }
+
+    // Quitter une playlist désactive le mode « Réorganiser »
+    LaunchedEffect(openId) { editMode = false }
 
     fun savePlaylists(newList: List<Playlist>) {
         playlists = newList
@@ -69,6 +80,21 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
     fun addTracks(playlistId: String, tracks: List<Track>) {
         savePlaylists(playlists.map {
             if (it.id == playlistId) it.copy(tracks = it.tracks + tracks) else it
+        })
+    }
+
+    // Déplace un titre de la position « from » vers la position « to » (numérotées à partir de 0)
+    fun moveTrack(playlistId: String, from: Int, to: Int) {
+        savePlaylists(playlists.map { p ->
+            if (p.id != playlistId || from !in p.tracks.indices) {
+                p
+            } else {
+                val target = to.coerceIn(0, p.tracks.size - 1)
+                val list = p.tracks.toMutableList()
+                val track = list.removeAt(from)
+                list.add(target, track)
+                p.copy(tracks = list)
+            }
         })
     }
 
@@ -205,30 +231,75 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
                 ) { Text("Lire") }
             }
             if (loading) Text("Analyse du dossier…")
-            Text("${current.tracks.size} titres", style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "${current.tracks.size} titres",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = { editMode = !editMode },
+                    enabled = current.tracks.size > 1
+                ) { Text(if (editMode) "Terminer" else "Réorganiser") }
+            }
+            if (editMode) {
+                Text(
+                    "Touchez ↑ ↓ pour déplacer d'un cran, ou touchez un titre pour choisir sa position.",
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
 
             LazyColumn {
                 itemsIndexed(current.tracks) { index, t ->
                     Row(
                         Modifier.fillMaxWidth()
-                            .clickable { playFrom(current.tracks, index) }
+                            .clickable {
+                                if (editMode) {
+                                    moveFrom = index
+                                    moveText = (index + 1).toString()
+                                } else {
+                                    playFrom(current.tracks, index)
+                                }
+                            }
                             .padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        if (editMode) {
+                            Text(
+                                "${index + 1}.",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.width(44.dp)
+                            )
+                        }
                         Text(
                             t.title,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
                         )
-                        IconButton(onClick = {
-                            savePlaylists(playlists.map {
-                                if (it.id == current.id)
-                                    it.copy(tracks = it.tracks.filterIndexed { i, _ -> i != index })
-                                else it
-                            })
-                        }) {
-                            Icon(Icons.Filled.Delete, "Retirer le titre")
+                        if (editMode) {
+                            IconButton(
+                                enabled = index > 0,
+                                onClick = { moveTrack(current.id, index, index - 1) }
+                            ) {
+                                Icon(Icons.Filled.KeyboardArrowUp, "Monter")
+                            }
+                            IconButton(
+                                enabled = index < current.tracks.size - 1,
+                                onClick = { moveTrack(current.id, index, index + 1) }
+                            ) {
+                                Icon(Icons.Filled.KeyboardArrowDown, "Descendre")
+                            }
+                        } else {
+                            IconButton(onClick = {
+                                savePlaylists(playlists.map {
+                                    if (it.id == current.id)
+                                        it.copy(tracks = it.tracks.filterIndexed { i, _ -> i != index })
+                                    else it
+                                })
+                            }) {
+                                Icon(Icons.Filled.Delete, "Retirer le titre")
+                            }
                         }
                     }
                 }
@@ -261,6 +332,33 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showNewDialog = false }) { Text("Annuler") }
+            }
+        )
+    }
+
+    // Fenêtre : choisir la nouvelle position d'un titre
+    moveFrom?.let { from ->
+        AlertDialog(
+            onDismissRequest = { moveFrom = null },
+            title = { Text("Déplacer le titre") },
+            text = {
+                OutlinedTextField(
+                    value = moveText,
+                    onValueChange = { moveText = it.filter { c -> c.isDigit() } },
+                    singleLine = true,
+                    label = { Text("Nouvelle position (1 à ${current?.tracks?.size ?: 1})") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pos = moveText.toIntOrNull()
+                    if (pos != null && current != null) moveTrack(current.id, from, pos - 1)
+                    moveFrom = null
+                }) { Text("Déplacer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { moveFrom = null }) { Text("Annuler") }
             }
         )
     }
