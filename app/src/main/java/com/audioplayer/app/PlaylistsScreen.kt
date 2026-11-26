@@ -6,7 +6,9 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,14 +20,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,6 +44,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,6 +56,11 @@ import androidx.media3.common.Player
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
+
+// Un titre en cours d'édition, avec un identifiant unique (même fichier présent 2 fois = 2 identifiants)
+data class EditItem(val key: Int, val track: Track)
 
 @Composable
 fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
@@ -65,12 +74,21 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
     var newName by remember { mutableStateOf("") }
     var toDelete by remember { mutableStateOf<Playlist?>(null) }
     var loading by remember { mutableStateOf(false) }
+
+    // ----- Mode « Réorganiser » -----
     var editMode by remember { mutableStateOf(false) }
-    var moveFrom by remember { mutableStateOf<Int?>(null) }
-    var moveText by remember { mutableStateOf("") }
+    var editItems by remember { mutableStateOf<List<EditItem>>(emptyList()) }
+    var selected by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var placing by remember { mutableStateOf(false) }
+    var showPosDialog by remember { mutableStateOf(false) }
+    var posText by remember { mutableStateOf("") }
 
     // Quitter une playlist désactive le mode « Réorganiser »
-    LaunchedEffect(openId) { editMode = false }
+    LaunchedEffect(openId) {
+        editMode = false
+        placing = false
+        selected = emptySet()
+    }
 
     fun savePlaylists(newList: List<Playlist>) {
         playlists = newList
@@ -83,19 +101,41 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
         })
     }
 
-    // Déplace un titre de la position « from » vers la position « to » (numérotées à partir de 0)
-    fun moveTrack(playlistId: String, from: Int, to: Int) {
-        savePlaylists(playlists.map { p ->
-            if (p.id != playlistId || from !in p.tracks.indices) {
-                p
-            } else {
-                val target = to.coerceIn(0, p.tracks.size - 1)
-                val list = p.tracks.toMutableList()
-                val track = list.removeAt(from)
-                list.add(target, track)
-                p.copy(tracks = list)
-            }
-        })
+    // Enregistre l'ordre en cours d'édition dans la playlist ouverte
+    fun commitEdit() {
+        val id = openId ?: return
+        val tracks = editItems.map { it.track }
+        savePlaylists(playlists.map { if (it.id == id) it.copy(tracks = tracks) else it })
+    }
+
+    fun startEdit(tracks: List<Track>) {
+        editItems = tracks.mapIndexed { i, t -> EditItem(i, t) }
+        selected = emptySet()
+        placing = false
+        editMode = true
+    }
+
+    fun stopEdit() {
+        commitEdit()
+        editMode = false
+        placing = false
+        selected = emptySet()
+    }
+
+    // Déplace tout le groupe sélectionné (il garde son ordre interne).
+    // « index » donne la position d'insertion dans la liste sans les titres sélectionnés.
+    fun moveSelectedTo(index: (List<EditItem>) -> Int) {
+        val moving = editItems.filter { it.key in selected }
+        if (moving.isEmpty()) return
+        val rest = editItems.filter { it.key !in selected }
+        val at = index(rest).coerceIn(0, rest.size)
+        editItems = rest.take(at) + moving + rest.drop(at)
+        commitEdit()
+    }
+
+    val lazyListState = rememberLazyListState()
+    val reorderableState = rememberReorderableLazyListState(lazyListState) { from, to ->
+        editItems = editItems.toMutableList().apply { add(to.index, removeAt(from.index)) }
     }
 
     fun playFrom(tracks: List<Track>, index: Int) {
@@ -166,9 +206,14 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
         }
     }
 
-    // Bouton retour du téléphone : détail -> liste -> lecteur
+    // Bouton retour du téléphone : placement -> édition -> détail -> liste -> lecteur
     BackHandler {
-        if (openId != null) openId = null else onBack()
+        when {
+            placing -> placing = false
+            editMode -> stopEdit()
+            openId != null -> openId = null
+            else -> onBack()
+        }
     }
 
     val current = playlists.firstOrNull { it.id == openId }
@@ -209,7 +254,7 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
         } else {
             // ----- DÉTAIL D'UNE PLAYLIST -----
             Row(verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = { openId = null }) {
+                IconButton(onClick = { if (editMode) stopEdit(); openId = null }) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Retour")
                 }
                 Text(
@@ -221,16 +266,17 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
                 )
             }
             Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { filePicker.launch(arrayOf("audio/*")) }) { Text("+ Fichiers") }
+                Button(onClick = { filePicker.launch(arrayOf("audio/*")) }, enabled = !editMode) { Text("+ Fichiers") }
                 Spacer(Modifier.width(8.dp))
-                Button(onClick = { folderPicker.launch(null) }) { Text("+ Dossier") }
+                Button(onClick = { folderPicker.launch(null) }, enabled = !editMode) { Text("+ Dossier") }
                 Spacer(Modifier.width(8.dp))
                 Button(
                     onClick = { playFrom(current.tracks, 0) },
-                    enabled = current.tracks.isNotEmpty()
+                    enabled = current.tracks.isNotEmpty() && !editMode
                 ) { Text("Lire") }
             }
             if (loading) Text("Analyse du dossier…")
+
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "${current.tracks.size} titres",
@@ -238,59 +284,129 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 TextButton(
-                    onClick = { editMode = !editMode },
+                    onClick = { if (editMode) stopEdit() else startEdit(current.tracks) },
                     enabled = current.tracks.size > 1
                 ) { Text(if (editMode) "Terminer" else "Réorganiser") }
             }
-            if (editMode) {
-                Text(
-                    "Touchez ↑ ↓ pour déplacer d'un cran, ou touchez un titre pour choisir sa position.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
 
-            LazyColumn {
-                itemsIndexed(current.tracks) { index, t ->
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .clickable {
-                                if (editMode) {
-                                    moveFrom = index
-                                    moveText = (index + 1).toString()
-                                } else {
-                                    playFrom(current.tracks, index)
+            if (editMode) {
+                // ----- BARRE D'OUTILS DE SÉLECTION -----
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        when {
+                            placing -> "Touchez le titre après lequel placer les ${selected.size} titres."
+                            selected.isEmpty() -> "Touchez des titres pour les sélectionner. Glissez ≡ pour déplacer."
+                            else -> "${selected.size} sélectionné(s)"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (placing) {
+                        TextButton(onClick = { placing = false }) { Text("Annuler") }
+                    } else {
+                        TextButton(onClick = {
+                            selected = if (selected.isEmpty()) editItems.map { it.key }.toSet() else emptySet()
+                        }) { Text(if (selected.isEmpty()) "Tout" else "Aucun") }
+                        if (selected.isNotEmpty()) {
+                            IconButton(onClick = {
+                                editItems = editItems.filter { it.key !in selected }
+                                selected = emptySet()
+                                commitEdit()
+                            }) { Icon(Icons.Filled.Delete, "Retirer la sélection") }
+                        }
+                    }
+                }
+                if (selected.isNotEmpty() && !placing) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        TextButton(onClick = {
+                            moveSelectedTo { 0 }
+                            selected = emptySet()
+                            scope.launch { lazyListState.scrollToItem(0) }
+                        }) { Text("↑ Haut") }
+                        TextButton(onClick = {
+                            moveSelectedTo { it.size }
+                            selected = emptySet()
+                            scope.launch { lazyListState.scrollToItem((editItems.size - 1).coerceAtLeast(0)) }
+                        }) { Text("↓ Bas") }
+                        TextButton(onClick = { posText = ""; showPosDialog = true }) { Text("N°…") }
+                        TextButton(onClick = { placing = true }) { Text("Placer…") }
+                    }
+                }
+
+                // ----- LISTE RÉORGANISABLE -----
+                LazyColumn(state = lazyListState) {
+                    itemsIndexed(editItems, key = { _, item -> item.key }) { index, item ->
+                        ReorderableItem(reorderableState, key = item.key) { isDragging ->
+                            val isSelected = item.key in selected
+                            val bg = when {
+                                isDragging -> MaterialTheme.colorScheme.surfaceVariant
+                                isSelected -> MaterialTheme.colorScheme.primaryContainer
+                                else -> Color.Transparent
+                            }
+                            Row(
+                                Modifier.fillMaxWidth()
+                                    .background(bg)
+                                    .clickable {
+                                        if (placing) {
+                                            if (!isSelected) {
+                                                moveSelectedTo { rest ->
+                                                    rest.indexOfFirst { it.key == item.key } + 1
+                                                }
+                                                selected = emptySet()
+                                                placing = false
+                                            }
+                                        } else {
+                                            selected = if (isSelected) selected - item.key else selected + item.key
+                                        }
+                                    },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(
+                                    checked = isSelected,
+                                    enabled = !placing,
+                                    onCheckedChange = {
+                                        selected = if (isSelected) selected - item.key else selected + item.key
+                                    }
+                                )
+                                Text(
+                                    "${index + 1}.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.width(40.dp)
+                                )
+                                Text(
+                                    item.track.title,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    modifier = Modifier.draggableHandle(
+                                        onDragStopped = { commitEdit() }
+                                    ),
+                                    onClick = {}
+                                ) {
+                                    Icon(Icons.Filled.DragHandle, "Glisser pour déplacer")
                                 }
                             }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (editMode) {
-                            Text(
-                                "${index + 1}.",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.width(44.dp)
-                            )
                         }
-                        Text(
-                            t.title,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (editMode) {
-                            IconButton(
-                                enabled = index > 0,
-                                onClick = { moveTrack(current.id, index, index - 1) }
-                            ) {
-                                Icon(Icons.Filled.KeyboardArrowUp, "Monter")
-                            }
-                            IconButton(
-                                enabled = index < current.tracks.size - 1,
-                                onClick = { moveTrack(current.id, index, index + 1) }
-                            ) {
-                                Icon(Icons.Filled.KeyboardArrowDown, "Descendre")
-                            }
-                        } else {
+                    }
+                }
+            } else {
+                // ----- LISTE NORMALE -----
+                LazyColumn {
+                    itemsIndexed(current.tracks) { index, t ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable { playFrom(current.tracks, index) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                t.title,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
                             IconButton(onClick = {
                                 savePlaylists(playlists.map {
                                     if (it.id == current.id)
@@ -305,6 +421,37 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    // Fenêtre : position précise pour le groupe sélectionné
+    if (showPosDialog) {
+        AlertDialog(
+            onDismissRequest = { showPosDialog = false },
+            title = { Text("Placer la sélection") },
+            text = {
+                OutlinedTextField(
+                    value = posText,
+                    onValueChange = { posText = it.filter { c -> c.isDigit() } },
+                    singleLine = true,
+                    label = { Text("Position du 1er titre (1 à ${editItems.size - selected.size + 1})") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val pos = posText.toIntOrNull()
+                    if (pos != null) {
+                        moveSelectedTo { pos - 1 }
+                        selected = emptySet()
+                        scope.launch { lazyListState.scrollToItem((pos - 1).coerceAtLeast(0)) }
+                    }
+                    showPosDialog = false
+                }) { Text("Déplacer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPosDialog = false }) { Text("Annuler") }
+            }
+        )
     }
 
     // Fenêtre : nouvelle playlist
@@ -332,33 +479,6 @@ fun PlaylistsScreen(player: Player, onBack: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showNewDialog = false }) { Text("Annuler") }
-            }
-        )
-    }
-
-    // Fenêtre : choisir la nouvelle position d'un titre
-    moveFrom?.let { from ->
-        AlertDialog(
-            onDismissRequest = { moveFrom = null },
-            title = { Text("Déplacer le titre") },
-            text = {
-                OutlinedTextField(
-                    value = moveText,
-                    onValueChange = { moveText = it.filter { c -> c.isDigit() } },
-                    singleLine = true,
-                    label = { Text("Nouvelle position (1 à ${current?.tracks?.size ?: 1})") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val pos = moveText.toIntOrNull()
-                    if (pos != null && current != null) moveTrack(current.id, from, pos - 1)
-                    moveFrom = null
-                }) { Text("Déplacer") }
-            },
-            dismissButton = {
-                TextButton(onClick = { moveFrom = null }) { Text("Annuler") }
             }
         )
     }

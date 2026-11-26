@@ -11,3 +11,9 @@ Nouveautés :
   - icônes de la barre d'état lisibles (enableEdgeToEdge + fond qui suit le thème)
   - bouton play du casque : relance la dernière liste, même appli fermée
   - au lancement de l'appli : dernière liste, dernier titre, dernière position
+  - playlists : mode « Réorganiser » (flèches ↑ ↓ ou position précise)
+
+AJOUT GRADLE (Module :app > dependencies) pour le glisser-déposer :
+  implementation("sh.calvin.reorderable:reorderable:3.0.0")
+puis Sync Now.
+Playlists : « Réorganiser » = sélection multiple (cases), glisser ≡, boutons Haut / Bas / N°… / Placer…
